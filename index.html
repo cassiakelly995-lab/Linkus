@@ -347,38 +347,36 @@ function normalizeURL(url){
 }
 
 // ─── Fetch ────────────────────────────────────────────────────────────────────
-async function fetchHTML(rawUrl){
-  const url = normalizeURL(rawUrl);
-  const isRaw = url !== rawUrl; // was transformed to a raw text URL
+async function fetchHTML(originalUrl){
+  const fetchUrl = normalizeURL(originalUrl);
+  const isRaw = fetchUrl !== originalUrl;
 
-  // Direct fetch first (works for raw.githubusercontent.com and others with CORS)
-  try{
-    const r = await fetch(url, {signal: AbortSignal.timeout(10000)});
-    if(r.ok){
-      const text = await r.text();
+  if(isRaw){
+    // Raw URL — try direct (GitHub raw has CORS open)
+    try{
+      const r = await fetch(fetchUrl, {signal: AbortSignal.timeout(12000)});
+      if(r.ok){ return wrapPlainText(await r.text()); }
+    }catch(e){ /* fallthrough to proxy */ }
+  }
+
+  // Proxy cascade — try all proxies for the fetchUrl
+  const proxies = [
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,
+    u => `https://corsproxy.io/?${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+  for(const mkProxy of proxies){
+    try{
+      const r = await fetch(mkProxy(fetchUrl), {signal: AbortSignal.timeout(14000)});
+      if(!r.ok) continue;
+      let text = await r.text();
+      // allorigins JSON wrapper
+      if(text.trim().startsWith('{"contents"')){
+        try{ text = JSON.parse(text).contents; }catch{}
+      }
+      if(!text || text.trim().length < 50) continue;
       if(isRaw || !text.trim().startsWith('<')) return wrapPlainText(text);
       return text;
-    }
-  }catch{}
-
-  // Proxy fallbacks
-  const proxies = [
-    'https://api.allorigins.win/raw?url=',
-    'https://corsproxy.io/?',
-    'https://api.codetabs.com/v1/proxy?quest=',
-  ];
-  for(const p of proxies){
-    try{
-      const r = await fetch(p + encodeURIComponent(url), {signal: AbortSignal.timeout(14000)});
-      if(r.ok){
-        const text = await r.text();
-        // allorigins sometimes wraps in JSON
-        if(text.trim().startsWith('{"contents"')){
-          try{ return JSON.parse(text).contents; }catch{}
-        }
-        if(isRaw || !text.trim().startsWith('<')) return wrapPlainText(text);
-        return text;
-      }
     }catch{}
   }
   throw new Error('Inacessível via todos os proxies');
@@ -492,18 +490,25 @@ function getKey(){
          localStorage.getItem('nexus_api_key') || '';
 }
 function saveKey(v){
-  v=v.trim();
-  if(v){ localStorage.setItem('nexus_api_key',v); }
-  const st=document.getElementById('keyStatus');
-  if(st) st.textContent = v.startsWith('sk-ant') ? '✓ chave ok' : v ? '⚠ formato?' : 'sem chave';
-  if(st) st.style.color = v.startsWith('sk-ant') ? 'var(--neon)' : 'var(--gold)';
+  v = v.trim();
+  if(v) localStorage.setItem('nexus_api_key', v);
+  else localStorage.removeItem('nexus_api_key');
+  const st = document.getElementById('keyStatus');
+  if(!st) return;
+  if(!v){        st.textContent='sem chave';     st.style.color='var(--muted)'; }
+  else if(v.startsWith('sk-ant')){ st.textContent='✓ chave ok'; st.style.color='var(--neon)'; }
+  else {         st.textContent='⚠ formato?';   st.style.color='var(--gold)'; }
 }
 function loadSavedKey(){
   const saved = localStorage.getItem('nexus_api_key')||'';
-  if(saved){
-    const el=document.getElementById('apiKey');
-    if(el) el.value=saved;
-    saveKey(saved);
+  const el = document.getElementById('apiKey');
+  if(saved && el){
+    el.value = saved;
+    const st = document.getElementById('keyStatus');
+    if(st){
+      st.textContent = saved.startsWith('sk-ant') ? '✓ chave salva' : '⚠ formato?';
+      st.style.color  = saved.startsWith('sk-ant') ? 'var(--neon)' : 'var(--gold)';
+    }
   }
 }
 
@@ -615,13 +620,27 @@ async function processar(){
   log(`NEXUS v4.0 inicializado`,'success');
   log(`${links.length} URL(s) na fila`,'info');
   const mods=['ai','translate','seo','contacts','keywords','links','text','tech'].filter(m=>on('mod-'+m));
-  log(`Módulos: ${mods.join(' · ')}`,'info');
-  const key=getKey();
+  log(`Módulos ativos: ${mods.join(' · ')}`,'info');
+
+  // ── API key check ──
+  const key = getKey();
   if(!key && (on('mod-ai')||on('mod-translate'))){
-    log('⚠ AVISO: Nenhuma API Key inserida — IA e Tradução serão ignorados','warn');
-    log('→ Insira sua chave em: console.anthropic.com/settings/keys','warn');
+    log('⚠ Sem API Key — módulos IA/Tradução desativados nesta sessão','warn');
+    log('→ Cole sua chave sk-ant-... no campo API KEY acima','warn');
+  } else if(key && !key.startsWith('sk-ant')){
+    log('⚠ API Key com formato suspeito — esperado: sk-ant-api03-...','warn');
   } else if(key){
-    log(`→ API Key: ${key.slice(0,12)}...****`,'success');
+    log(`✓ API Key: ${key.slice(0,16)}...`,'success');
+  }
+
+  // ── Quick proxy connectivity test ──
+  log('→ Testando acesso à rede...','info');
+  try{
+    const testR = await fetch('https://api.allorigins.win/raw?url=' + encodeURIComponent('https://httpbin.org/get'), {signal:AbortSignal.timeout(5000)});
+    if(testR.ok) log('✓ Proxy disponível','success');
+    else log(`⚠ Proxy retornou ${testR.status} — pode haver lentidão`,'warn');
+  }catch(e){
+    log(`⚠ Proxy offline (${e.message}) — tentará outros proxies`,'warn');
   }
 
   for(let i=0;i<links.length;i++){
@@ -629,7 +648,7 @@ async function processar(){
     setProgress(Math.round((i/links.length)*90));
     log(`[${i+1}/${links.length}] Acessando ${url.slice(0,70)}...`,'info');
     const fetchUrl = normalizeURL(url);
-    if(fetchUrl !== url) log(`→ Convertido para URL raw: ${fetchUrl.slice(0,70)}...`,'warn');
+    if(fetchUrl !== url) log(`→ GitHub/Pastebin detectado → usando URL raw`,'warn');
 
     let r={url,error:null,seo:null,textoLimpo:'',contacts:null,keywords:[],tech:[],ai:null,translation:null,category:null};
 
