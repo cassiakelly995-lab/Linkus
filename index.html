@@ -248,6 +248,18 @@ textarea::placeholder{color:var(--muted)}
       <span class="cc-version">NEXUS/4.0 · Claude Sonnet · PT-BR</span>
     </div>
     <div class="cc-body">
+
+      <!-- API Key bar -->
+      <div id="apikeyBar" style="display:flex;align-items:center;gap:10px;margin-bottom:14px;background:var(--bg);border:1px solid rgba(240,165,0,0.3);border-radius:2px;padding:10px 14px">
+        <span style="font-family:var(--mono);font-size:10px;color:var(--gold);letter-spacing:2px;white-space:nowrap">&#128273; API KEY</span>
+        <input id="apiKey" type="password" placeholder="sk-ant-api03-..." autocomplete="off" spellcheck="false"
+          style="flex:1;background:transparent;border:none;outline:none;color:var(--neon);font-family:var(--mono);font-size:12px;caret-color:var(--neon);min-width:0"
+          oninput="saveKey(this.value)">
+        <span id="keyStatus" style="font-family:var(--mono);font-size:9px;color:var(--muted);white-space:nowrap">sem chave</span>
+        <a href="https://console.anthropic.com/settings/keys" target="_blank"
+          style="font-family:var(--mono);font-size:9px;color:var(--neon2);text-decoration:none;white-space:nowrap">obter &#8599;</a>
+      </div>
+
       <textarea id="entrada" placeholder="▸ Cole URLs ou texto com links...&#10;▸ Suporta múltiplos links por vez&#10;▸ Ctrl+Enter para disparar análise"></textarea>
 
       <div class="modules-grid">
@@ -474,15 +486,56 @@ function categorize(url,title,text){
   return {label:'Website',color:'dim'};
 }
 
+// ─── API Key management ───────────────────────────────────────────────────────
+function getKey(){
+  return document.getElementById('apiKey')?.value?.trim() ||
+         localStorage.getItem('nexus_api_key') || '';
+}
+function saveKey(v){
+  v=v.trim();
+  if(v){ localStorage.setItem('nexus_api_key',v); }
+  const st=document.getElementById('keyStatus');
+  if(st) st.textContent = v.startsWith('sk-ant') ? '✓ chave ok' : v ? '⚠ formato?' : 'sem chave';
+  if(st) st.style.color = v.startsWith('sk-ant') ? 'var(--neon)' : 'var(--gold)';
+}
+function loadSavedKey(){
+  const saved = localStorage.getItem('nexus_api_key')||'';
+  if(saved){
+    const el=document.getElementById('apiKey');
+    if(el) el.value=saved;
+    saveKey(saved);
+  }
+}
+
 // ─── Claude API call ──────────────────────────────────────────────────────────
 async function callClaude(prompt, maxTokens=1200){
-  const res = await fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
-  });
-  const data = await res.json();
-  return data.content?.find(b=>b.type==='text')?.text||'';
+  const key = getKey();
+  if(!key){
+    log('⚠ API Key não configurada — módulos IA desativados para esta URL','warn');
+    return '';
+  }
+  try{
+    const res = await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{
+        'Content-Type':'application/json',
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body:JSON.stringify({model:'claude-sonnet-4-20250514',max_tokens:maxTokens,messages:[{role:'user',content:prompt}]})
+    });
+    if(!res.ok){
+      const err=await res.text();
+      log(`✗ Erro API Claude: ${res.status} — ${err.slice(0,120)}`,'error');
+      return '';
+    }
+    const data = await res.json();
+    return data.content?.find(b=>b.type==='text')?.text||'';
+  }catch(e){
+    log(`✗ Falha na chamada Claude: ${e.message}`,'error');
+    return '';
+  }
 }
 
 // ─── AI Analysis ──────────────────────────────────────────────────────────────
@@ -563,6 +616,13 @@ async function processar(){
   log(`${links.length} URL(s) na fila`,'info');
   const mods=['ai','translate','seo','contacts','keywords','links','text','tech'].filter(m=>on('mod-'+m));
   log(`Módulos: ${mods.join(' · ')}`,'info');
+  const key=getKey();
+  if(!key && (on('mod-ai')||on('mod-translate'))){
+    log('⚠ AVISO: Nenhuma API Key inserida — IA e Tradução serão ignorados','warn');
+    log('→ Insira sua chave em: console.anthropic.com/settings/keys','warn');
+  } else if(key){
+    log(`→ API Key: ${key.slice(0,12)}...****`,'success');
+  }
 
   for(let i=0;i<links.length;i++){
     const url=links[i];
@@ -1141,6 +1201,7 @@ function limpar(){
 }
 
 document.addEventListener('keydown',e=>{ if(e.ctrlKey&&e.key==='Enter') processar(); });
+document.addEventListener('DOMContentLoaded', loadSavedKey);
 </script>
 </body>
 </html>
