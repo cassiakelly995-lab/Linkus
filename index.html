@@ -320,15 +320,62 @@ function log(msg, type='log'){
 }
 function setProgress(p){ document.getElementById('progressFill').style.width = p + '%'; }
 
+// ─── Normalise URL (GitHub blob → raw, etc.) ─────────────────────────────────
+function normalizeURL(url){
+  // GitHub blob → raw
+  const ghBlob = url.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/(.+)$/);
+  if(ghBlob) return `https://raw.githubusercontent.com/${ghBlob[1]}/${ghBlob[2]}/${ghBlob[3]}`;
+  // GitHub gist → raw
+  const ghGist = url.match(/^https?:\/\/gist\.github\.com\/([^/]+)\/([a-f0-9]+)$/);
+  if(ghGist) return `https://gist.githubusercontent.com/${ghGist[1]}/${ghGist[2]}/raw`;
+  // Pastebin → raw
+  const pb = url.match(/^https?:\/\/pastebin\.com\/(?!raw\/)([A-Za-z0-9]+)$/);
+  if(pb) return `https://pastebin.com/raw/${pb[1]}`;
+  return url;
+}
+
 // ─── Fetch ────────────────────────────────────────────────────────────────────
-async function fetchHTML(url){
-  for(const p of ['https://api.allorigins.win/raw?url=','https://corsproxy.io/?']){
+async function fetchHTML(rawUrl){
+  const url = normalizeURL(rawUrl);
+  const isRaw = url !== rawUrl; // was transformed to a raw text URL
+
+  // Direct fetch first (works for raw.githubusercontent.com and others with CORS)
+  try{
+    const r = await fetch(url, {signal: AbortSignal.timeout(10000)});
+    if(r.ok){
+      const text = await r.text();
+      if(isRaw || !text.trim().startsWith('<')) return wrapPlainText(text);
+      return text;
+    }
+  }catch{}
+
+  // Proxy fallbacks
+  const proxies = [
+    'https://api.allorigins.win/raw?url=',
+    'https://corsproxy.io/?',
+    'https://api.codetabs.com/v1/proxy?quest=',
+  ];
+  for(const p of proxies){
     try{
-      const r = await fetch(p+encodeURIComponent(url),{signal:AbortSignal.timeout(13000)});
-      if(r.ok) return await r.text();
+      const r = await fetch(p + encodeURIComponent(url), {signal: AbortSignal.timeout(14000)});
+      if(r.ok){
+        const text = await r.text();
+        // allorigins sometimes wraps in JSON
+        if(text.trim().startsWith('{"contents"')){
+          try{ return JSON.parse(text).contents; }catch{}
+        }
+        if(isRaw || !text.trim().startsWith('<')) return wrapPlainText(text);
+        return text;
+      }
     }catch{}
   }
-  throw new Error('Inacessível via proxy');
+  throw new Error('Inacessível via todos os proxies');
+}
+
+// ─── Wrap plain text as minimal HTML so parser works ─────────────────────────
+function wrapPlainText(text){
+  const esc = text.replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  return `<html><head><title>Conteúdo bruto</title></head><body><pre>${esc}</pre></body></html>`;
 }
 
 // ─── Detect links ─────────────────────────────────────────────────────────────
@@ -336,15 +383,23 @@ function detectLinks(t){ return [...new Set(t.match(/https?:\/\/[^\s<>"')\],]+/g
 
 // ─── Extract clean text ───────────────────────────────────────────────────────
 function extractText(doc){
+  // Plain text / raw file wrapped in a single <pre>
+  const pres=[...doc.querySelectorAll('pre')];
+  const bodyKids=[...(doc.body?.children||[])];
+  if(pres.length===1 && bodyKids.length<=2){
+    return (pres[0].textContent||'').slice(0,8000);
+  }
   'script,style,noscript,nav,header,footer,aside,form,button,iframe,svg'.split(',')
     .forEach(s=>{ try{ doc.querySelectorAll(s).forEach(e=>e.remove()); }catch{} });
   const mains=['[role="main"]','main','article','.article','.post','.content','#content','#main','body'];
   let el=null; for(const s of mains){ el=doc.querySelector(s); if(el) break; }
   const raw=(el||doc.body)?.textContent||'';
   const seen=new Set();
-  return raw.split('\n').map(l=>l.trim()).filter(l=>l.length>30)
+  const lines=raw.split('\n');
+  const minLen = lines.length>50 ? 8 : 30;
+  return lines.map(l=>l.trim()).filter(l=>l.length>minLen)
     .filter(l=>{ if(seen.has(l))return false; seen.add(l); return true; })
-    .join('\n').slice(0,6000);
+    .join('\n').slice(0,8000);
 }
 
 // ─── SEO ──────────────────────────────────────────────────────────────────────
@@ -513,11 +568,13 @@ async function processar(){
     const url=links[i];
     setProgress(Math.round((i/links.length)*90));
     log(`[${i+1}/${links.length}] Acessando ${url.slice(0,70)}...`,'info');
+    const fetchUrl = normalizeURL(url);
+    if(fetchUrl !== url) log(`→ Convertido para URL raw: ${fetchUrl.slice(0,70)}...`,'warn');
 
     let r={url,error:null,seo:null,textoLimpo:'',contacts:null,keywords:[],tech:[],ai:null,translation:null,category:null};
 
     try{
-      const html = await fetchHTML(url);
+      const html = await fetchHTML(fetchUrl);
       const parser = new DOMParser();
       const doc = parser.parseFromString(html,'text/html');
 
