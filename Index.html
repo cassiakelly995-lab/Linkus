@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+
+<meta charset="UTF-8">
+<title>Extrator Inteligente de Links</title>
+
+<style>
+
+body{
+font-family:Arial;
+background:#0f172a;
+color:white;
+padding:30px;
+text-align:center;
+}
+
+textarea{
+width:80%;
+height:120px;
+padding:10px;
+font-size:15px;
+}
+
+button{
+padding:10px 20px;
+margin:10px;
+background:#22c55e;
+border:none;
+color:white;
+cursor:pointer;
+}
+
+#resultado{
+margin-top:30px;
+text-align:left;
+background:#1e293b;
+padding:20px;
+border-radius:8px;
+max-height:500px;
+overflow:auto;
+}
+
+.linkCard{
+border-bottom:1px solid #334155;
+margin-bottom:15px;
+padding-bottom:15px;
+}
+
+</style>
+
+</head>
+
+<body>
+
+<h1>🔎 Extrator Inteligente de Links</h1>
+
+<p>Cole um texto ou link abaixo</p>
+
+<textarea id="entrada"></textarea>
+
+<br>
+
+<button onclick="processar()">Extrair Informações</button>
+
+<div id="resultado"></div>
+
+<script>
+
+function detectarLinks(texto){
+
+let regex=/https?:\/\/[^\s]+/g
+
+return texto.match(regex) || []
+
+}
+
+async function extrairPagina(url){
+
+let proxy="https://api.allorigins.win/raw?url="
+
+try{
+
+let resp=await fetch(proxy+encodeURIComponent(url))
+
+let html=await resp.text()
+
+let parser=new DOMParser()
+
+let doc=parser.parseFromString(html,"text/html")
+
+let titulo=doc.querySelector("title")?.innerText || ""
+
+let descricao=doc.querySelector('meta[name="description"]')?.content || ""
+
+let texto=doc.body.innerText.substring(0,1500)
+
+let emails=texto.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || []
+
+let telefones=texto.match(/(\+?\d{2,3}\s?)?(\(?\d{2}\)?\s?)?\d{4,5}-?\d{4}/g) || []
+
+let links=[...doc.querySelectorAll("a")].map(a=>a.href).slice(0,10)
+
+return{
+url,
+titulo,
+descricao,
+texto,
+emails,
+telefones,
+links
+}
+
+}catch{
+
+return{url,erro:"Não foi possível acessar"}
+
+}
+
+}
+
+async function processar(){
+
+let texto=document.getElementById("entrada").value
+
+let links=detectarLinks(texto)
+
+let resultado=document.getElementById("resultado")
+
+resultado.innerHTML="Detectando links...<br>"
+
+for(let link of links){
+
+resultado.innerHTML+="<br>Extraindo "+link+" ...<br>"
+
+let dados=await extrairPagina(link)
+
+resultado.innerHTML+=`
+<div class="linkCard">
+
+<h3>${dados.titulo}</h3>
+
+<b>URL:</b> ${dados.url}<br>
+
+<b>Descrição:</b> ${dados.descricao}<br><br>
+
+<b>Emails:</b> ${dados.emails.join(", ")}<br>
+
+<b>Telefones:</b> ${dados.telefones.join(", ")}<br><br>
+
+<b>Texto:</b><br>
+${dados.texto}<br><br>
+
+<b>Links internos:</b><br>
+${dados.links.join("<br>")}
+
+</div>
+`
+
+}
+
+}
+
+</script>
+
+</body>
+
+</html>
